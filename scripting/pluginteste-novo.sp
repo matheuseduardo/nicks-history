@@ -15,6 +15,12 @@ public Plugin myinfo = {
 bool g_bEnabled;
 Handle g_cvarEnabled;
 bool DEBUGGING = false;
+Database db;
+
+char criaTabela1[] = "create table etc, etc";
+char criaTabela2[] = "create table etc, etc";
+char insertQuery[] = "insert into %s (client, nick) values (%s, %s) ";
+char updateQuery[] = "update %s set ";
 
 
 public void OnPluginStart(){
@@ -43,8 +49,10 @@ public void OnConfigsExecuted() {
 
 
 
-public Action OnClientChangeName(Handle event, const char[] name, bool dontBroadcast) {
+public Action OnClientChangeName(Event event, const char[] name, bool dontBroadcast) {
     // registrar novo nick para o usuário
+    
+    LogDebug("evento mudou de nome");
     
     if(!g_bEnabled)
         return Plugin_Continue;
@@ -54,12 +62,23 @@ public Action OnClientChangeName(Handle event, const char[] name, bool dontBroad
     if (!IsValidPlayer(client))
         return Plugin_Continue;
     
-    // ATUALIZA NOME NO SQLITE
+    // obtém novo nome
+    char novoNome[MAX_NAME_LENGTH];
+    event.GetString("newname", novoNome, MAX_NAME_LENGTH);
+    
+    // obtém steam id
+    
+    
+    // verifica se já consta na base
+    
+    // se não, insere na tabela de usuário
+    
+    // caminho comum (sim ou não) insere histórico do nick
+    
     
     return Plugin_Continue;
     
 }
-
 
 
 public Action TesteCmdb(int client, int args){
@@ -77,8 +96,36 @@ public Action TesteCmdb(int client, int args){
     GetClientName(client, nameUser, sizeof(nameUser));
     ReplyToCommand(client, "que nome feio: %s", nameUser);
     
-    return Plugin_Continue;
+    return Plugin_Changed;
 }
+
+
+public Action TesteArray(int client, int args){
+    
+    LogDebug("teste array");
+    
+    char nameUser[MAX_NAME_LENGTH];
+    GetClientName(client, nameUser, sizeof(nameUser));
+    ReplyToCommand(client, "que nome feio: %s", nameUser);
+    
+    return Plugin_Changed;
+}
+
+
+public Action ConectaDb() {
+    
+    char erroDb[256];
+    
+    db = SQLite_UseDatabase("rankme",erroDb,sizeof(erroDb));
+    
+    if (db == null) {
+        PrintToServer("Could not connect: %s", erroDb);
+        return Plugin_Stop;
+    }
+    
+    return Plugin_Handled;
+}
+
 
 public void LogDebug(char[] text) {
     PrintToServer("DEBUGGING! >>>>> %s", text);
@@ -87,8 +134,8 @@ public void LogDebug(char[] text) {
 
 // AUX METHODS
 
-stock int GetClientFromEvent(Handle event) {
-	return GetClientOfUserId(GetEventInt(event, "userid"));
+stock int GetClientFromEvent(Event event) {
+	return GetClientOfUserId(event.GetInt("userid"));
 }
 
 stock bool IsValidClient(int client) {
