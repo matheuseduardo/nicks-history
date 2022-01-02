@@ -8,7 +8,7 @@ public Plugin myinfo = {
     name = "Nicks History",
     author = "@matheuseduardo",
     description = "List last nicks used by same Steam ID",
-    version = "0.9",
+    version = "0.10",
     url = "https://bitbucket.org/matheuseduardo/nicks-history/"
 };
 
@@ -17,18 +17,21 @@ Handle g_cvarEnabled;
 bool DEBUGGING = false;
 Database db;
 
-char createTableQuery[] = "CREATE TABLE lastnicks ( "
-    ... "    id           INTEGER      PRIMARY KEY AUTOINCREMENT, "
-    ... "    steamid      STRING (64)  NOT NULL, "
-    ... "    nickused     STRING (128) NOT NULL, "
-    ... "    lasttimeused              NOT NULL "
+char createTableQuery[] = "CREATE TABLE IF NOT EXISTS `lastnicks` ( "
+    ... "    id        INTEGER      PRIMARY KEY AUTOINCREMENT, "
+    ... "    steamid   STRING (64)  NOT NULL, "
+    ... "    nick      STRING (128) NOT NULL, "
+    ... "    lasttime  NUMERIC      NOT NULL "
     ...");";
 
-char countsQuery[] = "select count(*) from lastnicks nickused = %";
+// query para verificar a existência
+char countQuery[] = "select count(*) from lastnicks where steamid = '%s' and nick = '%s'";
 
-char insertQuery[] = "insert into lastnicks (client, nick) values (%s, %s) ";
+// query para inserir registros
+char insertQuery[] = "insert into lastnicks (steamid, nick, lasttime) values ('%s', '%s', strftime('%%s','now')) ";
 
-char updateQuery[] = "update %s set ";
+// query para atualizar se já existir
+char updateQuery[] = "update lastnicks set lasttime = strftime('%%s','now') where steamid = '%s' and nick = '%s'";
 
 
 public void OnPluginStart(){
@@ -43,8 +46,9 @@ public void OnPluginStart(){
     LogDebug("registrando evento");
     HookEvent("player_changename", OnClientChangeName, EventHookMode_Pre);
     
-    LogDebug("registrando comando");
+    LogDebug("registrando comandos");
     RegAdminCmd("sm_testecmdb", TesteCmdb, ADMFLAG_GENERIC, "comando teste kkk2");
+    RegAdminCmd("sm_nickshistory_purge", PurgeHistory, ADMFLAG_GENERIC, "comando teste kkk2");
     
     LogDebug("autoexec");
     AutoExecConfig(true, "nicks-history");
@@ -53,9 +57,10 @@ public void OnPluginStart(){
 
 public void OnConfigsExecuted() {
     g_bEnabled = GetConVarBool(g_cvarEnabled);
-    LogDebug("configurações carregadas");
+    LogDebug("------- > OnConfigsExecuted");
     
     ConectaDb();
+    LogDebug("configurações carregadas");
 }
 
 
@@ -78,14 +83,33 @@ public Action OnClientChangeName(Event event, const char[] name, bool dontBroadc
     
     // obtém steam id
     char steamid[64];
-    GetClientAuthId(cliente, AuthId_Steam2, steamid, strlen(steamid));
+    GetClientAuthId(cliente, AuthId_Steam2, steamid, sizeof(steamid));
     
     char log[100];
-    Format(log, strlen(log), "insere novo nick %s", novoNome);
+    Format(log, sizeof(log), "insere novo nick %s", novoNome);
     LogDebug(log);
     insertUpdateNewNick(steamid, novoNome);
     
     return Plugin_Continue;
+}
+
+
+public void OnClientAuthorized(int client, const char[] auth) {
+    
+    char texto[255];
+    FormatEx(texto, sizeof(texto), "autorizado: %s", auth);
+    LogDebug(texto);
+    
+    char nome[MAX_NAME_LENGTH];
+    GetClientName(client, nome, sizeof(nome));
+    
+    Format(texto, sizeof(texto), "nome conectado: %s", nome);
+    LogDebug(texto);
+    
+    insertUpdateNewNick(auth, nome);
+    
+    
+    LogDebug("OnClientAuthorized");
 }
 
 
@@ -108,9 +132,28 @@ public Action TesteCmdb(int client, int args){
 }
 
 
+public Action PurgeHistory(int client, int args){
+    
+    LogDebug("iniciou comando");
+    
+    if(!g_bEnabled || !IsValidPlayer(client)) {
+        LogDebug("usuário inválido :((");
+        return Plugin_Handled;
+    }
+    
+    LogDebug("é jogador válido");
+    
+    char nameUser[MAX_NAME_LENGTH];
+    GetClientName(client, nameUser, sizeof(nameUser));
+    ReplyToCommand(client, "que nome feio: %s", nameUser);
+    
+    return Plugin_Changed;
+}
+
+
 public Action ConectaDb() {
     
-    LogDebug("VAI conectar");
+    LogDebug("ConectaDb");
     
     // já conectado?
     if (db != INVALID_HANDLE) {
@@ -118,7 +161,7 @@ public Action ConectaDb() {
         return Plugin_Continue;
     }
     
-    char erroDb[256];
+    char erroDb[255];
     
     db = SQLite_UseDatabase("nicks-history", erroDb, sizeof(erroDb));
     
@@ -129,26 +172,88 @@ public Action ConectaDb() {
         SetFailState(erroDb);
     }
     
+    LogDebug("db conectado");
+    
+    
+    if (!SQL_FastQuery(db, createTableQuery)) {
+        SQL_GetError(db, erroDb, sizeof(erroDb));
+        PrintToServer("Could create table: %s", erroDb);
+        SetFailState(erroDb);
+    }
+    
+    LogDebug("tabela criada!");
+    
     return Plugin_Handled;
 }
 
-public void insertUpdateNewNick(char steamId[64], char novoNome[MAX_NAME_LENGTH]) {
+
+public void insertUpdateNewNick(const char[] steamId, char novoNome[MAX_NAME_LENGTH]) {
     
-    // verifica se já consta na base
+    char escName[MAX_NAME_LENGTH*2+1];
+    db.Escape(novoNome, escName, sizeof(escName));
     
-    // se não, insere na tabela de usuário
+    char query[200];
+    char texto[255];
+    char error[255];
     
-    // caminho comum (sim ou não) insere histórico do nick
+    Format(query, sizeof(query), countQuery, steamId, escName);
+    DBResultSet rs = SQL_Query(db, query);
+    
+    if (rs == INVALID_HANDLE || rs == null) {
+        SQL_GetError(db, error, sizeof(error));
+        PrintToServer("Failed to query (error: %s)", error);
+        return;
+    }
+    
+    SQL_FetchRow(rs);
+    int count = SQL_FetchInt(rs, 0);
+    
+    FormatEx(texto, sizeof(texto), "registros encontrados: %i", count);
+    LogDebug(texto);
+    
+    bool execOk;
+    
+    if (count == 0) {
+        LogDebug("INSERE REGISTRO");
+        Format(query, sizeof(query), insertQuery, steamId, escName);
+        execOk = SQL_FastQuery(db, query);
+    }
+    else if (count >= 1) {
+        LogDebug("ATUALIZA REGISTRO");
+        Format(query, sizeof(query), updateQuery, steamId, escName);
+        execOk = SQL_FastQuery(db, query);
+    }
+    
+    if (!execOk) {
+        SQL_GetError(db, error, sizeof(error));
+        PrintToServer("Failed to query (error: %s)", error);
+        return;
+    }
+    
+    LogDebug(query);
+    LogDebug("ok - fim da função!");
     
 }
 
 
-public void LogDebug(char[] text) {
-    PrintToServer("DEBUGGING! >>>>> %s", text);
+public void LogDebug(char[] text, any ...) {
+    PrintToServer("DEBUGGING! >>> nickshistory >>> %s", text);
 }
 
 
 // AUX METHODS
+
+stock void GetPluginBasename(Handle plugin, char[] buffer,int maxlength)
+{
+    GetPluginFilename(plugin, buffer, maxlength);
+
+    int check = -1;
+    if ((check = FindCharInString(buffer, '/', true)) != -1 ||
+        (check = FindCharInString(buffer, '\\', true)) != -1)
+    {
+        Format(buffer, maxlength, "%s", buffer[check+1]);
+    }
+}
 
 stock int GetClientFromEvent(Event event) {
 	return GetClientOfUserId(event.GetInt("userid"));
