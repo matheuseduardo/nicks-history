@@ -7,14 +7,14 @@ public Plugin myinfo = {
     name = "Nicks History",
     author = "@matheuseduardo",
     description = "List last nicks used by same Steam ID",
-    version = "0.11",
+    version = "0.13",
     url = "https://bitbucket.org/matheuseduardo/nicks-history/"
 };
 
 // global variables
 bool g_bEnabled;
 Handle g_cvarEnabled;
-Database db;
+Database g_db;
 
 char createTableQuery[] = "CREATE TABLE IF NOT EXISTS `lastnicks` ( "
     ... "    id        INTEGER      PRIMARY KEY AUTOINCREMENT, "
@@ -33,7 +33,7 @@ char insertQuery[] = "insert into lastnicks (steamid, nick, lasttime) values ('%
 char updateQuery[] = "update lastnicks set lasttime = strftime('%%s','now') where steamid = '%s' and nick = '%s'";
 
 // query para atualizar se já existir
-char listNicksQuery[] = "select id, nick, strftime('%%s','now')-lasttime as tempo from lastnicks where steamid = '%s' order by lasttime desc";
+char listNicksQuery[] = "select id, nick, strftime('%%s','now')-lasttime as tempo from lastnicks where steamid = '%s' order by 3 asc";
 
 
 public void OnPluginStart(){
@@ -152,37 +152,42 @@ public Action NicksHistoryList(int client, int args){
     char nameUser[MAX_NAME_LENGTH];
     GetClientName(cl1, nameUser, sizeof(nameUser));
     
-    PrintToConsole(client, "localizando nicks para o steam '%s'", steamId);
-    
     char query[200];
     char error[255];
     
     Format(query, sizeof(query), listNicksQuery, steamId);
-    DBResultSet rs = SQL_Query(db, query);
+    DBResultSet rs = SQL_Query(g_db, query);
     
     LogDebug(query);
     
     if (rs == INVALID_HANDLE || rs == null) {
         LogDebug("deu erro");
-        SQL_GetError(db, error, sizeof(error));
+        SQL_GetError(g_db, error, sizeof(error));
         PrintToServer("Failed to query (error: %s)", error);
         return Plugin_Handled;
     }
     
-    int id;
+    if (rs.RowCount <= 0) {
+        ReplyToCommand(client, "Nenhum registro encontrado para %s", nome);
+    } else {
+        ReplyToCommand(client, "Abra o console para verificar os registros");
+    }
+    
     char nick[MAX_NAME_LENGTH];
-    int lastTime;
+    int lastTime, count;
+    
+    count = 0;
     
     while(rs.FetchRow()) {
+        count++;
         
-        id = rs.FetchInt(0);
         rs.FetchString(1, nick, sizeof(nick));
         lastTime = rs.FetchInt(2);
         
         char quantoTempo[100];
         FormatTimeFromSeconds(lastTime, quantoTempo);
         
-        PrintToConsole(client, "%i - %s - %s", id, nick, quantoTempo);
+        PrintToConsole(client, "%i. %s  --  %s", count, nick, quantoTempo);
     }
     
     delete rs;
@@ -217,17 +222,17 @@ public Action ConectaDb() {
     LogDebug("ConectaDb");
     
     // já conectado?
-    if (db != INVALID_HANDLE) {
+    if (g_db != INVALID_HANDLE) {
         LogDebug("já conectado");
         return Plugin_Continue;
     }
     
     char erroDb[255];
     
-    db = SQLite_UseDatabase("nicks-history", erroDb, sizeof(erroDb));
+    g_db = SQLite_UseDatabase("nicks-history", erroDb, sizeof(erroDb));
     
     // falhou conexão?
-    if (db == null) {
+    if (g_db == null) {
         LogDebug("não conectou");
         PrintToServer("Could not connect: %s", erroDb);
         SetFailState(erroDb);
@@ -236,8 +241,8 @@ public Action ConectaDb() {
     LogDebug("db conectado");
     
     
-    if (!SQL_FastQuery(db, createTableQuery)) {
-        SQL_GetError(db, erroDb, sizeof(erroDb));
+    if (!SQL_FastQuery(g_db, createTableQuery)) {
+        SQL_GetError(g_db, erroDb, sizeof(erroDb));
         PrintToServer("Could create table: %s", erroDb);
         SetFailState(erroDb);
     }
@@ -251,17 +256,17 @@ public Action ConectaDb() {
 public void insertUpdateNewNick(const char[] steamId, char novoNome[MAX_NAME_LENGTH]) {
     
     char escName[MAX_NAME_LENGTH*2+1];
-    db.Escape(novoNome, escName, sizeof(escName));
+    g_db.Escape(novoNome, escName, sizeof(escName));
     
     char query[200];
     char texto[255];
     char error[255];
     
     Format(query, sizeof(query), countQuery, steamId, escName);
-    DBResultSet rs = SQL_Query(db, query);
+    DBResultSet rs = SQL_Query(g_db, query);
     
     if (rs == INVALID_HANDLE || rs == null) {
-        SQL_GetError(db, error, sizeof(error));
+        SQL_GetError(g_db, error, sizeof(error));
         PrintToServer("Failed to query (error: %s)", error);
         return;
     }
@@ -279,16 +284,16 @@ public void insertUpdateNewNick(const char[] steamId, char novoNome[MAX_NAME_LEN
     if (count == 0) {
         LogDebug("INSERE REGISTRO");
         Format(query, sizeof(query), insertQuery, steamId, escName);
-        execOk = SQL_FastQuery(db, query);
+        execOk = SQL_FastQuery(g_db, query);
     }
     else if (count >= 1) {
         LogDebug("ATUALIZA REGISTRO");
         Format(query, sizeof(query), updateQuery, steamId, escName);
-        execOk = SQL_FastQuery(db, query);
+        execOk = SQL_FastQuery(g_db, query);
     }
     
     if (!execOk) {
-        SQL_GetError(db, error, sizeof(error));
+        SQL_GetError(g_db, error, sizeof(error));
         PrintToServer("Failed to query (error: %s)", error);
         return;
     }
@@ -300,6 +305,7 @@ public void insertUpdateNewNick(const char[] steamId, char novoNome[MAX_NAME_LEN
 
 
 public void LogDebug(char[] text, any ...) {
+    return; // remove to enable debug output
     PrintToServer("DEBUGGING! >>> nickshistory >>> %s", text);
 }
 
