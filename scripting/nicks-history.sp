@@ -1,4 +1,3 @@
-
 #pragma semicolon  1
 #include <sourcemod>
 
@@ -8,13 +7,13 @@ public Plugin myinfo = {
     name = "Nicks History",
     author = "@matheuseduardo",
     description = "List last nicks used by same Steam ID",
-    version = "0.10",
+    version = "0.11",
     url = "https://bitbucket.org/matheuseduardo/nicks-history/"
 };
 
+// global variables
 bool g_bEnabled;
 Handle g_cvarEnabled;
-bool DEBUGGING = false;
 Database db;
 
 char createTableQuery[] = "CREATE TABLE IF NOT EXISTS `lastnicks` ( "
@@ -33,6 +32,9 @@ char insertQuery[] = "insert into lastnicks (steamid, nick, lasttime) values ('%
 // query para atualizar se já existir
 char updateQuery[] = "update lastnicks set lasttime = strftime('%%s','now') where steamid = '%s' and nick = '%s'";
 
+// query para atualizar se já existir
+char listNicksQuery[] = "select id, nick, strftime('%%s','now')-lasttime as tempo from lastnicks where steamid = '%s' order by lasttime desc";
+
 
 public void OnPluginStart(){
     
@@ -47,8 +49,8 @@ public void OnPluginStart(){
     HookEvent("player_changename", OnClientChangeName, EventHookMode_Pre);
     
     LogDebug("registrando comandos");
-    RegAdminCmd("sm_testecmdb", TesteCmdb, ADMFLAG_GENERIC, "comando teste kkk2");
-    RegAdminCmd("sm_nickshistory_purge", PurgeHistory, ADMFLAG_GENERIC, "comando teste kkk2");
+    RegAdminCmd("sm_nickshistory_purge", PurgeHistory, ADMFLAG_GENERIC, "deletar da base algum nick");
+    RegAdminCmd("sm_nickshistory_list", NicksHistoryList, ADMFLAG_GENERIC, "lista no console últimos nicks utilizado pela pessoa");
     
     LogDebug("autoexec");
     AutoExecConfig(true, "nicks-history");
@@ -57,7 +59,7 @@ public void OnPluginStart(){
 
 public void OnConfigsExecuted() {
     g_bEnabled = GetConVarBool(g_cvarEnabled);
-    LogDebug("------- > OnConfigsExecuted");
+    LogDebug("OnConfigsExecuted");
     
     ConectaDb();
     LogDebug("configurações carregadas");
@@ -65,32 +67,27 @@ public void OnConfigsExecuted() {
 
 
 public Action OnClientChangeName(Event event, const char[] name, bool dontBroadcast) {
-    // registrar novo nick para o usuário
-    
-    LogDebug("evento mudou de nome");
-    
     if(!g_bEnabled)
-        return Plugin_Continue;
+        return Plugin_Handled;
     
     int cliente = GetClientFromEvent(event);
     
     if (!IsValidPlayer(cliente))
-        return Plugin_Continue;
+        return Plugin_Handled;
     
     // obtém novo nome
-    char novoNome[MAX_NAME_LENGTH];
+    char novoNome[MAX_NAME_LENGTH], oldName[MAX_NAME_LENGTH];
     event.GetString("newname", novoNome, MAX_NAME_LENGTH);
+    event.GetString("oldname", oldName, MAX_NAME_LENGTH);
     
     // obtém steam id
     char steamid[64];
     GetClientAuthId(cliente, AuthId_Steam2, steamid, sizeof(steamid));
     
-    char log[100];
-    Format(log, sizeof(log), "insere novo nick %s", novoNome);
-    LogDebug(log);
+    insertUpdateNewNick(steamid, oldName);
     insertUpdateNewNick(steamid, novoNome);
     
-    return Plugin_Continue;
+    return Plugin_Handled;
 }
 
 
@@ -113,22 +110,84 @@ public void OnClientAuthorized(int client, const char[] auth) {
 }
 
 
-public Action TesteCmdb(int client, int args){
+public void OnClientDisconnect(int client) {
+    if (!IsValidPlayer(client))
+        return;
     
-    LogDebug("iniciou comando");
+    // obtém novo nome
+    char name[MAX_NAME_LENGTH];
+    GetClientName(client, name, sizeof(name));
     
-    if(!g_bEnabled || !IsValidPlayer(client)) {
-        LogDebug("usuário inválido :((");
+    // obtém steam id
+    char steamid[64];
+    GetClientAuthId(client, AuthId_Steam2, steamid, sizeof(steamid));
+    
+    insertUpdateNewNick(steamid, name);
+}
+
+
+public Action NicksHistoryList(int client, int args){
+    
+    LogDebug("iniciou comando nicks-history-list");
+    
+    if (args < 1)
+	{
+		ReplyToCommand(client,"[SM] Usage: sm_nickshistory_list <target>");
+		return Plugin_Handled;
+	}
+    
+    char nome[MAX_NAME_LENGTH];
+    GetCmdArg(1, nome, sizeof(nome));
+    
+    int cl1 = FindTarget(client, nome, true);
+    
+    if (cl1 == -1) {
+        ReplyToCommand(client, "Client not found for %s", nome);
         return Plugin_Handled;
     }
     
-    LogDebug("é jogador válido");
+    char steamId[64];
+    GetClientAuthId(cl1, AuthId_Steam2, steamId, sizeof(steamId));
     
     char nameUser[MAX_NAME_LENGTH];
-    GetClientName(client, nameUser, sizeof(nameUser));
-    ReplyToCommand(client, "que nome feio: %s", nameUser);
+    GetClientName(cl1, nameUser, sizeof(nameUser));
     
-    return Plugin_Changed;
+    PrintToConsole(client, "localizando nicks para o steam '%s'", steamId);
+    
+    char query[200];
+    char error[255];
+    
+    Format(query, sizeof(query), listNicksQuery, steamId);
+    DBResultSet rs = SQL_Query(db, query);
+    
+    LogDebug(query);
+    
+    if (rs == INVALID_HANDLE || rs == null) {
+        LogDebug("deu erro");
+        SQL_GetError(db, error, sizeof(error));
+        PrintToServer("Failed to query (error: %s)", error);
+        return Plugin_Handled;
+    }
+    
+    int id;
+    char nick[MAX_NAME_LENGTH];
+    int lastTime;
+    
+    while(rs.FetchRow()) {
+        
+        id = rs.FetchInt(0);
+        rs.FetchString(1, nick, sizeof(nick));
+        lastTime = rs.FetchInt(2);
+        
+        char quantoTempo[100];
+        FormatTimeFromSeconds(lastTime, quantoTempo);
+        
+        PrintToConsole(client, "%i - %s - %s", id, nick, quantoTempo);
+    }
+    
+    delete rs;
+    
+    return Plugin_Handled;
 }
 
 
@@ -140,6 +199,8 @@ public Action PurgeHistory(int client, int args){
         LogDebug("usuário inválido :((");
         return Plugin_Handled;
     }
+    
+    // FindTarget();
     
     LogDebug("é jogador válido");
     
@@ -211,6 +272,8 @@ public void insertUpdateNewNick(const char[] steamId, char novoNome[MAX_NAME_LEN
     FormatEx(texto, sizeof(texto), "registros encontrados: %i", count);
     LogDebug(texto);
     
+    delete rs;
+    
     bool execOk;
     
     if (count == 0) {
@@ -243,18 +306,6 @@ public void LogDebug(char[] text, any ...) {
 
 // AUX METHODS
 
-stock void GetPluginBasename(Handle plugin, char[] buffer,int maxlength)
-{
-    GetPluginFilename(plugin, buffer, maxlength);
-
-    int check = -1;
-    if ((check = FindCharInString(buffer, '/', true)) != -1 ||
-        (check = FindCharInString(buffer, '\\', true)) != -1)
-    {
-        Format(buffer, maxlength, "%s", buffer[check+1]);
-    }
-}
-
 stock int GetClientFromEvent(Event event) {
 	return GetClientOfUserId(event.GetInt("userid"));
 }
@@ -281,3 +332,10 @@ stock bool IsValidPlayer(int client) {
     return (IsValidClient(client) && !IsClientSourceTV(client) && !IsFakeClient(client));
 }
 
+stock void FormatTimeFromSeconds(int iSeconds, char segundosFormatados[100]) {
+	int iDays = iSeconds / 86400;
+	int iHours = iSeconds % 86400 / 3600;
+	int iMins = iSeconds % 3600 / 60;
+	
+	Format(segundosFormatados, sizeof(segundosFormatados), "%02d dias, %02d horas e %02d minutos atrás", iDays, iHours, iMins);
+}
