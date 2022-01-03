@@ -27,3 +27,6 @@ a nice way to get last nicks used by players (by SteamID)
 	}
 }
 ```
+
+## To-do
+- Internationalization output messages
