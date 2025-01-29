@@ -7,13 +7,15 @@ public Plugin myinfo = {
     name = "Nicks History",
     author = "@matheuseduardo",
     description = "List last nicks used by same Steam ID",
-    version = "0.13",
+    version = "0.2",
     url = "https://bitbucket.org/matheuseduardo/nicks-history/"
 };
 
 // global variables
 bool g_bEnabled;
 Handle g_cvarEnabled;
+ConVar g_cvarDebug;
+ConVar g_cvarMaxRecords;
 Database g_db;
 
 char createTableQuery[] = "CREATE TABLE IF NOT EXISTS `lastnicks` ( "
@@ -35,18 +37,26 @@ char updateQuery[] = "update lastnicks set lasttime = strftime('%%s','now') wher
 // query para excluir e limpar todos
 char deleteQuery[] = "DELETE FROM lastnicks WHERE steamid = '%s'";
 
-// query para atualizar se já existir
+// query para excluir e limpar registros antigos
+char excluiAntigos[] = "DELETE FROM lastnicks WHERE id NOT IN (SELECT id FROM lastnicks WHERE steamid = '%s' ORDER BY lasttime DESC LIMIT %d)";
+
+// query para selecionar os últimos nicks
 char listNicksQuery[] = "select id, nick, strftime('%%s','now')-lasttime as tempo from lastnicks where steamid = '%s' order by 3 asc";
 
 
 public void OnPluginStart(){
+    g_cvarDebug = CreateConVar("nickshistory_debug", "0", "Ativar logs de depuração? 1 = Sim, 0 = Não", FCVAR_NONE, true, 0.0, true, 1.0);
     
+    if (g_cvarDebug)
+        PrintToServer("DEBUG HABILITADO");
+
     LogDebug("carregando traduções");
     LoadTranslations("common.phrases");
     LoadTranslations("nicks-history.phrases");
     
     LogDebug("definindo convar");
     g_cvarEnabled = CreateConVar("nickshistory_enabled","1","Is Nicks History enabled? 1 = true 0 = false", FCVAR_NONE, true, 0.0, true, 1.0);
+    g_cvarMaxRecords = CreateConVar("nickshistory_maxrecords", "50", "Número máximo de registros por jogador. Se definido '0', fica sem limites Padrão: 50.", FCVAR_NONE, true, 1.0);
     
     LogDebug("registrando evento");
     HookEvent("player_changename", OnClientChangeName, EventHookMode_Pre);
@@ -167,6 +177,7 @@ public Action NicksHistoryList(int client, int args){
         LogDebug("deu erro");
         SQL_GetError(g_db, error, sizeof(error));
         PrintToServer("Failed to query (error: %s)", error);
+        delete rs;
         return Plugin_Handled;
     }
     
@@ -295,6 +306,11 @@ public void insertUpdateNewNick(const char[] steamId, char novoNome[MAX_NAME_LEN
     
     char escName[MAX_NAME_LENGTH*2+1];
     g_db.Escape(novoNome, escName, sizeof(escName));
+
+    if (strlen(novoNome) == 0) {
+        LogDebug("Nome vazio, ignorando inserção.");
+        return;
+    }
     
     char query[200];
     char texto[255];
@@ -317,6 +333,11 @@ public void insertUpdateNewNick(const char[] steamId, char novoNome[MAX_NAME_LEN
     
     delete rs;
     
+    if (!IsValidSteamID(steamId)) {
+        LogDebug("Steam ID inválido: %s", steamId);
+        return;
+    }
+    
     bool execOk;
     
     if (count == 0) {
@@ -335,6 +356,15 @@ public void insertUpdateNewNick(const char[] steamId, char novoNome[MAX_NAME_LEN
         PrintToServer("Failed to query (error: %s)", error);
         return;
     }
+
+    int maximoRegistros = GetConVarInt(g_cvarMaxRecords);
+
+    // Verificar e excluir registros antigos
+    if (maximoRegistros > 0) {
+        Format(query, sizeof(query), excluiAntigos, steamId, maximoRegistros);
+        SQL_FastQuery(g_db, query);
+    }
+    
     
     LogDebug(query);
     LogDebug("ok - fim da função!");
@@ -343,8 +373,10 @@ public void insertUpdateNewNick(const char[] steamId, char novoNome[MAX_NAME_LEN
 
 
 public void LogDebug(char[] text, any ...) {
-    return; // remove to enable debug output
-    PrintToServer("DEBUGGING! >>> nickshistory >>> %s", text);
+    if (!GetConVarBool(g_cvarDebug)) return;
+    char buffer[255];
+    VFormat(buffer, sizeof(buffer), text, 2);
+    PrintToServer("DEBUGGING! >>> nickshistory >>> %s", buffer);
 }
 
 
@@ -373,13 +405,26 @@ stock bool IsValidPlayer(int client) {
     if (IsFakeClient(client))
         LogDebug(" é cliente fake");
     
-    return (IsValidClient(client) && !IsClientSourceTV(client) && !IsFakeClient(client));
+    return (IsClientConnected(client) && IsClientInGame(client) && !IsFakeClient(client) && !IsClientSourceTV(client));
 }
 
 stock void FormatTimeFromSeconds(int iSeconds, char segundosFormatados[100]) {
-	int iDays = iSeconds / 86400;
-	int iHours = iSeconds % 86400 / 3600;
-	int iMins = iSeconds % 3600 / 60;
-	
-	Format(segundosFormatados, sizeof(segundosFormatados), "%02d dias, %02d horas e %02d minutos atrás", iDays, iHours, iMins);
+    int iDays = iSeconds / 86400;
+    int iHours = iSeconds % 86400 / 3600;
+    int iMins = iSeconds % 3600 / 60;
+    int iSecs = iSeconds % 60;
+
+    if (iDays > 0) {
+        Format(segundosFormatados, sizeof(segundosFormatados), "%02d dias, %02d horas, %02d minutos e %02d segundos atrás", iDays, iHours, iMins, iSecs);
+    } else if (iHours > 0) {
+        Format(segundosFormatados, sizeof(segundosFormatados), "%02d horas, %02d minutos e %02d segundos atrás", iHours, iMins, iSecs);
+    } else if (iMins > 0) {
+        Format(segundosFormatados, sizeof(segundosFormatados), "%02d minutos e %02d segundos atrás", iMins, iSecs);
+    } else {
+        Format(segundosFormatados, sizeof(segundosFormatados), "%02d segundos atrás", iSecs);
+    }
+}
+
+stock bool IsValidSteamID(const char[] steamId) {
+    return (strlen(steamId) > 0 && StrContains(steamId, "STEAM_") == 0);
 }
