@@ -32,6 +32,9 @@ char insertQuery[] = "insert into lastnicks (steamid, nick, lasttime) values ('%
 // query para atualizar se já existir
 char updateQuery[] = "update lastnicks set lasttime = strftime('%%s','now') where steamid = '%s' and nick = '%s'";
 
+// query para excluir e limpar todos
+char deleteQuery[] = "DELETE FROM lastnicks WHERE steamid = '%s'";
+
 // query para atualizar se já existir
 char listNicksQuery[] = "select id, nick, strftime('%%s','now')-lasttime as tempo from lastnicks where steamid = '%s' order by 3 asc";
 
@@ -196,24 +199,59 @@ public Action NicksHistoryList(int client, int args){
 }
 
 
-public Action PurgeHistory(int client, int args){
-    
-    LogDebug("iniciou comando");
-    
-    if(!g_bEnabled || !IsValidPlayer(client)) {
-        LogDebug("usuário inválido :((");
+public Action PurgeHistory(int client, int args) {
+    LogDebug("iniciou comando nicks-history-purge");
+
+    // Verifica se o plugin está habilitado e se o cliente é válido
+    if (!g_bEnabled || !IsValidPlayer(client)) {
+        LogDebug("Plugin desabilitado ou usuário inválido");
+        ReplyToCommand(client, "[SM] O plugin está desabilitado ou você não é um jogador válido.");
         return Plugin_Handled;
     }
-    
-    // FindTarget();
-    
-    LogDebug("é jogador válido");
-    
+
+    // Verifica se o comando foi usado corretamente
+    if (args < 1) {
+        ReplyToCommand(client, "[SM] Uso: sm_nickshistory_purge <target>");
+        return Plugin_Handled;
+    }
+
+    // Obtém o nome do alvo
+    char nome[MAX_NAME_LENGTH];
+    GetCmdArg(1, nome, sizeof(nome));
+
+    // Encontra o jogador alvo
+    int target = FindTarget(client, nome, true, false);
+
+    if (target == -1) {
+        ReplyToCommand(client, "[SM] Jogador não encontrado.");
+        return Plugin_Handled;
+    }
+
+    // Obtém o Steam ID do jogador alvo
+    char steamId[64];
+    GetClientAuthId(target, AuthId_Steam2, steamId, sizeof(steamId));
+
+    // Prepara a query para deletar os registros do jogador
+    char query[200];
+    char error[255];
+    Format(query, sizeof(query), deleteQuery, steamId);
+
+    // Executa a query
+    if (!SQL_FastQuery(g_db, query)) {
+        SQL_GetError(g_db, error, sizeof(error));
+        PrintToServer("Falha ao executar a query (erro: %s)", error);
+        ReplyToCommand(client, "[SM] Falha ao limpar o histórico de nicks.");
+        return Plugin_Handled;
+    }
+
+    // Informa o administrador que o histórico foi limpo
     char nameUser[MAX_NAME_LENGTH];
-    GetClientName(client, nameUser, sizeof(nameUser));
-    ReplyToCommand(client, "que nome feio: %s", nameUser);
-    
-    return Plugin_Changed;
+    GetClientName(target, nameUser, sizeof(nameUser));
+    ReplyToCommand(client, "[SM] Histórico de nicks de %s foi limpo com sucesso.", nameUser);
+
+    LogDebug("Histórico de nicks limpo para o Steam ID: %s", steamId);
+
+    return Plugin_Handled;
 }
 
 
